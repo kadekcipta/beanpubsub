@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/kadekcipta/beanstalkd/pubsub"
+	pubsub "github.com/kadekcipta/beanpubsub"
 	"golang.org/x/net/context"
 )
 
@@ -67,7 +67,7 @@ func main() {
 				1,
 				0,
 				time.Second*1,
-				[]byte("hello 1"),
+				[]byte("hello world !"),
 			)
 
 			<-time.After(1 * time.Second)
