@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"log"
 	"runtime"
 	"time"
 
@@ -63,12 +64,15 @@ func main() {
 
 	go func() {
 		for {
-			m.Publish(
+			err := m.Publish(
 				1,
 				0,
 				time.Second*1,
 				[]byte("hello world !"),
 			)
+			if err != nil {
+				log.Println(err)
+			}
 
 			<-time.After(1 * time.Second)
 		}

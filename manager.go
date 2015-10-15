@@ -2,6 +2,7 @@ package beanpubsub
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -72,7 +73,6 @@ func (m *beanstalkdPubSub) Close() error {
 
 	if m.connPub != nil {
 		if e := m.connPub.Close(); e != nil {
-			// update error
 			err = e
 		}
 	}
@@ -126,15 +126,20 @@ func (m *beanstalkdPubSub) broadcast(data []byte) {
 	}
 }
 
+func (m *beanstalkdPubSub) possibleNetworkError(err error) bool {
+	return err == io.EOF || err == io.ErrUnexpectedEOF
+}
+
 // Publish puts the message for specified topic to a beanstalkd tube
 func (m *beanstalkdPubSub) Publish(priority uint32, delay, ttr time.Duration, data []byte) error {
-
 	m.Lock()
 	defer m.Unlock()
 
 	// send to beanstalkd to certain tube
-	if m.connSub == nil {
-		return ErrNotConnected
+	if m.connPub == nil {
+		if err := m.dialPubConnection(); err != nil {
+			return err
+		}
 	}
 
 	if m.tube == nil {
@@ -144,6 +149,11 @@ func (m *beanstalkdPubSub) Publish(priority uint32, delay, ttr time.Duration, da
 	_, err := m.tube.Put(data, priority, delay, ttr)
 
 	if err != nil {
+		if m.possibleNetworkError(err.(beanstalk.ConnError).Err) {
+			m.tube = nil
+			m.connPub = nil
+			return m.dialPubConnection()
+		}
 		return err
 	}
 
@@ -154,10 +164,10 @@ func (m *beanstalkdPubSub) watchIncomingMessages() {
 	if m.connSub == nil {
 		return
 	}
-
 	// create tubeset for topic
 	tubeset := beanstalk.NewTubeSet(m.connSub, m.topic)
 
+watchLoop:
 	for {
 		select {
 		// watch for close signal
@@ -181,27 +191,52 @@ func (m *beanstalkdPubSub) watchIncomingMessages() {
 				time.Sleep(time.Second)
 				// re-reserve
 				continue
+			} else if m.possibleNetworkError(err.(beanstalk.ConnError).Err) {
+				// try reconnecting
+				for {
+					select {
+					case <-m.c.Done():
+						return
+					default:
+						<-time.After(time.Second * 3)
+						if err := m.dialSubSocket(); err != nil {
+							continue
+						}
+						tubeset = beanstalk.NewTubeSet(m.connSub, m.topic)
+						goto watchLoop
+					}
+				}
 			}
 		}
 	}
 }
 
-func (m *beanstalkdPubSub) ensureConnect() error {
+func (m *beanstalkdPubSub) dialPubConnection() error {
 	// open connection for subscription
-	cr, err := beanstalk.Dial("tcp", m.address)
+	c, err := beanstalk.Dial("tcp", m.address)
 	if err != nil {
 		return err
 	}
+	m.connPub = c
+	return nil
+}
 
-	m.connSub = cr
-
-	// open connection for publishing
-	cw, err := beanstalk.Dial("tcp", m.address)
+func (m *beanstalkdPubSub) dialSubSocket() error {
+	c, err := beanstalk.Dial("tcp", m.address)
 	if err != nil {
 		return err
 	}
+	m.connSub = c
+	return nil
+}
 
-	m.connPub = cw
+func (m *beanstalkdPubSub) ensureConnect() error {
+	if err := m.dialPubConnection(); err != nil {
+		return err
+	}
+	if err := m.dialSubSocket(); err != nil {
+		return err
+	}
 
 	return nil
 }
